@@ -27,9 +27,14 @@ Cloud-native, AI-augmented multi-year portfolio optimization platform for energy
 - **Cache:** Redis (scenario results, optimization cache)
 - **Task Queue:** Celery with Redis broker (long-running optimizations)
 - **Optimization:**
-  - Pyomo (algebraic modeling language for MILP)
-  - Gurobi (primary commercial MILP solver — requires license, ~$100K/yr commercial)
-  - Google OR-Tools (open-source fallback for freemium tier / <200 projects)
+  - Pyomo (algebraic modeling language for MILP — solver-agnostic)
+  - **User-selectable MILP solvers** (configured per deployment):
+    - HiGHS (open-source, free — recommended default; strong MILP/LP performance)
+    - Google OR-Tools (open-source, free — good general-purpose solver)
+    - GLPK (open-source, free — lightweight, adequate for smaller portfolios)
+    - CBC/CLP (COIN-OR, open-source, free — mature LP/MILP solver)
+    - Gurobi (commercial — requires license, ~$100K/yr; fastest for large MILP)
+    - CPLEX (commercial — requires license; alternative to Gurobi)
   - SciPy / CVXPY (convex optimization)
 - **Stochastic Optimization:** Custom SDDP (Stochastic Dual Dynamic Programming) implementation
 - **Real Options:** Custom binomial lattice + Longstaff-Schwartz LSM implementation
@@ -95,7 +100,7 @@ API GATEWAY (FastAPI)
 
 Three backend services communicate through the FastAPI gateway:
 1. **Data Service** — project import/validation/transformation, graph analysis (NetworkX), expression engine evaluation
-2. **Optimization Service** — MILP model construction (Pyomo), solver dispatch (Gurobi/OR-Tools), temporal state management, dependency constraint generation, SDDP, real options, multi-objective
+2. **Optimization Service** — MILP model construction (Pyomo), solver dispatch (user-selected: HiGHS/OR-Tools/GLPK/CBC/Gurobi/CPLEX), temporal state management, dependency constraint generation, SDDP, real options, multi-objective
 3. **Analytics Service** — Monte Carlo simulation, sensitivity analysis (tornado charts), risk metrics (CVaR, VaR), reporting/export (Excel, PowerPoint, PDF)
 
 Long-running optimizations and Monte Carlo simulations are dispatched to Celery workers. Results stored in TimescaleDB hypertables for fast time-series queries. Dashboard queries use continuous aggregates.
@@ -161,7 +166,7 @@ Long-running optimizations and Monte Carlo simulations are dispatched to Celery 
 │   │   │   ├── temporal_state_manager.py   # TimeSeriesStateManager class
 │   │   │   ├── hybrid_optimizer.py         # HybridPortfolioOptimizer class
 │   │   │   ├── milp_builder.py             # Pyomo ConcreteModel construction
-│   │   │   ├── solver_interface.py         # Gurobi / OR-Tools abstraction layer
+│   │   │   ├── solver_interface.py         # Pluggable solver abstraction (HiGHS/OR-Tools/GLPK/CBC/Gurobi/CPLEX)
 │   │   │   ├── constraint_generators.py    # Selection, dependency, group, metric constraints
 │   │   │   ├── linearization.py            # Big-M reformulations for max/min
 │   │   │   ├── sddp_engine.py             # Stochastic Dual Dynamic Programming (P1)
@@ -449,9 +454,26 @@ Choose M carefully using domain-specific bounds (e.g., `max_debt = sum(capex_sch
 
 Optimization results `(scenario_id, project_id, year) → metrics` are stored in TimescaleDB hypertables. Use continuous aggregates for dashboard queries (total CAPEX/revenue/production per scenario per year). Never store time-series in regular PostgreSQL tables.
 
-### 6. Solver Abstraction (Gurobi Primary, OR-Tools Fallback)
+### 6. Pluggable Solver Architecture (User-Selectable)
 
-All solver interactions go through `solver_interface.py`. Never call Gurobi APIs directly from service or route layers. The interface handles automatic fallback from Gurobi → OR-Tools if Gurobi is unavailable. Always extract and return solver statistics (solve time, MIP gap, iterations, variable/constraint counts).
+All solver interactions go through `solver_interface.py`. Never call solver-specific APIs directly from service or route layers. The solver is **user-configurable** — users choose their solver via application config or per-scenario optimization settings.
+
+**Supported solvers (all via Pyomo's `SolverFactory`):**
+
+| Solver | License | Best For | Notes |
+|--------|---------|----------|-------|
+| **HiGHS** | Open-source (MIT) | Default recommended; strong MILP/LP | Modern, actively developed, excellent performance-to-cost ratio |
+| **OR-Tools** | Open-source (Apache 2.0) | General-purpose, good CP-SAT | Google-backed, well-documented |
+| **GLPK** | Open-source (GPL) | Small-medium portfolios (<100 projects) | Lightweight, easy to install |
+| **CBC/CLP** | Open-source (EPL) | Mature MILP, wide compatibility | COIN-OR project, battle-tested |
+| **Gurobi** | Commercial (~$100K/yr) | Largest portfolios (500+), fastest solve | 3-10x faster than open-source for large MILP |
+| **CPLEX** | Commercial | Enterprise alternative to Gurobi | IBM product, comparable performance |
+
+**Design principles:**
+- The platform must work fully with open-source solvers out of the box (no commercial license required).
+- Solver selection is a configuration option, not a code change.
+- The interface auto-detects installed solvers and presents available options to the user.
+- Always extract and return solver statistics (solve time, MIP gap, iterations, variable/constraint counts) regardless of solver chosen.
 
 ### 7. Expression Engine (PlanningSpace Compatible)
 
@@ -500,7 +522,7 @@ Core deterministic optimization — implement this first.
   - Economic assumptions: price decks, fiscal regimes, Master Data Sets with attribute-based linking
   - Basic interdependency modeling (prerequisites, mutex)
   - Expression engine (PlanningSpace-compatible FYF/PT/CT formulas, dependency analysis, topological evaluation)
-  - Deterministic MILP optimization (Pyomo + Gurobi/OR-Tools)
+  - Deterministic MILP optimization (Pyomo + user-selected solver; default: HiGHS)
   - `TimeSeriesStateManager` and `HybridPortfolioOptimizer`
   - 4 constraint types: selection, dependency, group, metric (hard + soft)
   - 5 metric constraint categories: CAPEX annual/cumulative, production, emissions, infrastructure
@@ -560,6 +582,7 @@ Enterprise scale.
 | **Accessibility** | WCAG compliance | 2.1 AA |
 | **Compliance** | SOC 2 Type II | Within 18 months |
 | **MIP Gap** | Optimality tolerance | 0.1% (99.9% optimal) |
+| **Solver** | Must work with open-source solvers out of the box | HiGHS as default |
 
 ---
 
@@ -581,9 +604,11 @@ When adding new interdependency types:
 
 ### Solver Abstraction Pattern
 1. Build the Pyomo `ConcreteModel` with all variables and constraints.
-2. Call `solver_interface.solve(model, solver_preference="gurobi")`.
-3. Interface handles Gurobi → OR-Tools fallback automatically.
-4. Always extract solver stats: `{solve_time, mip_gap, iterations, num_variables, num_constraints, precomputed_projects, optimization_method}`.
+2. Call `solver_interface.solve(model, solver="highs")` (or whichever solver the user configured).
+3. The interface auto-detects available solvers via `SolverFactory` and validates the requested solver is installed.
+4. If the requested solver is unavailable, raise a clear error listing installed alternatives — do not silently fall back.
+5. Always extract solver stats: `{solver_name, solve_time, mip_gap, iterations, num_variables, num_constraints, precomputed_projects, optimization_method}`.
+6. Solver choice is stored in scenario `optimization_settings.solver` (persisted per scenario) and in app config `default_solver` (deployment-level default).
 
 ### Expression Evaluation Pipeline
 1. Register all metrics in `ExpressionRegistry` (Input, Master Data, Computed).
@@ -604,7 +629,7 @@ When adding new interdependency types:
 ## Testing Guidelines
 
 1. **Known-answer tests:** Every optimization algorithm must include a small test case (5-10 projects) where the optimal solution is hand-verified. Verify objective value, selected projects, and timing.
-2. **Solver equivalence:** Run the same problem on both Gurobi and OR-Tools; verify objective values match within MIP gap tolerance.
+2. **Solver equivalence:** Run the same problem on all supported solvers (at minimum HiGHS and one other); verify objective values match within MIP gap tolerance.
 3. **Temporal state correctness:** Verify that state variables (debt, production, emissions) at each year match manual forward calculation.
 4. **Constraint enforcement:** For each constraint type (selection, dependency, group, metric), verify the solver cannot produce solutions that violate the constraint.
 5. **Soft constraint behavior:** Verify slack variables activate appropriately and penalty terms correctly degrade the objective.
