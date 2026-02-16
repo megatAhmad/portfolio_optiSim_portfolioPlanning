@@ -97,19 +97,31 @@ class OpportunityDetail(OpportunityResponse):
 class OutcomeCreate(BaseModel):
     """Request body for adding an outcome to an opportunity."""
 
-    opportunity_id: uuid.UUID = Field(..., description="Parent opportunity ID")
     name: str = Field(
         ...,
         min_length=1,
         max_length=100,
         description="Outcome name (e.g. Base, Optimistic, Pessimistic)",
     )
-    probability: float = Field(
+    weight: float = Field(
         ...,
         ge=0.0,
         le=1.0,
         description="Probability weight (all outcomes per opportunity must sum to 1.0)",
     )
+
+
+class OutcomeUpdate(BaseModel):
+    """Request body for updating an existing outcome."""
+
+    name: str | None = Field(default=None, min_length=1, max_length=100)
+    weight: float | None = Field(default=None, ge=0.0, le=1.0)
+
+
+# Aliases for consistent naming in API routes
+OpportunityRead = OpportunityResponse
+OpportunityWithOutcomes = OpportunityDetail
+OutcomeRead = OutcomeResponse
 
 
 # ---------------------------------------------------------------------------
@@ -146,3 +158,88 @@ class AttributeUpdate(BaseModel):
     business_unit: str | None = None
     price_scenario: str | None = None
     custom_attributes: dict[str, Any] | None = None
+
+
+# ---------------------------------------------------------------------------
+# Dependencies
+# ---------------------------------------------------------------------------
+
+
+class DependencyCreate(BaseModel):
+    """Request body for creating a project dependency."""
+
+    parent_opportunity_id: uuid.UUID = Field(..., description="Parent project ID")
+    child_opportunity_id: uuid.UUID = Field(..., description="Child project ID")
+    dependency_type: str = Field(
+        ...,
+        description="Type: PREREQUISITE, MUTEX, SYNERGY, SHARED_INFRASTRUCTURE, RESOURCE_CONSTRAINT",
+    )
+    time_offset_years: int | None = Field(
+        default=None,
+        description="Years between parent and child (for PREREQUISITE)",
+    )
+    timing_relation: str | None = Field(
+        default=None,
+        description="Timing relationship: BEFORE_START, AFTER_COMPLETION, SIMULTANEOUS",
+    )
+    synergy_value: float | None = Field(
+        default=None,
+        description="Additional NPV from combined selection (for SYNERGY)",
+    )
+    capacity_limit: float | None = Field(
+        default=None,
+        description="Shared capacity limit (for SHARED_INFRASTRUCTURE)",
+    )
+
+
+class DependencyRead(BaseModel):
+    """Response schema for project dependency."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    parent_opportunity_id: uuid.UUID
+    child_opportunity_id: uuid.UUID
+    dependency_type: str
+    time_offset_years: int | None = None
+    timing_relation: str | None = None
+    synergy_value: float | None = None
+    capacity_limit: float | None = None
+    created_at: datetime
+
+
+# ---------------------------------------------------------------------------
+# Selection Groups
+# ---------------------------------------------------------------------------
+
+
+class SelectionGroupCreate(BaseModel):
+    """Request body for creating a selection group."""
+
+    name: str = Field(..., min_length=1, max_length=255)
+    group_type: str = Field(
+        ...,
+        description="Type: EXCLUSIVE, INCLUSIVE, AT_LEAST_N, AT_MOST_N, EXACTLY_N",
+    )
+    constraint_value: int | None = Field(
+        default=None,
+        description="N value for AT_LEAST_N, AT_MOST_N, EXACTLY_N constraints",
+    )
+    member_opportunity_ids: list[uuid.UUID] = Field(
+        ...,
+        min_length=2,
+        description="List of project IDs in this group",
+    )
+
+
+class SelectionGroupRead(BaseModel):
+    """Response schema for selection group."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    name: str
+    group_type: str
+    constraint_value: int | None = None
+    created_at: datetime
+    updated_at: datetime

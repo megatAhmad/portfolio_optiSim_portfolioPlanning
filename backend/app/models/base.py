@@ -2,10 +2,14 @@
 
 import uuid
 from datetime import datetime
+from typing import AsyncGenerator
 
 from sqlalchemy import MetaData, func
 from sqlalchemy.dialects.postgresql import UUID
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
+
+from app.config import settings
 
 # Naming convention for constraints — ensures consistent, predictable names
 # across all auto-generated indexes, foreign keys, unique constraints, and checks.
@@ -63,3 +67,41 @@ class BaseModel(UUIDPrimaryKeyMixin, TimestampMixin):
     """
 
     pass
+
+
+# ---------------------------------------------------------------------------
+# Database Engine and Session
+# ---------------------------------------------------------------------------
+
+# Create async engine
+engine = create_async_engine(
+    settings.DATABASE_URL,
+    echo=settings.DEBUG,
+    pool_size=10,
+    max_overflow=20,
+    pool_pre_ping=True,
+)
+
+# Create async session factory
+AsyncSessionLocal = sessionmaker(
+    engine,
+    class_=AsyncSession,
+    expire_on_commit=False,
+)
+
+
+# Dependency for FastAPI route handlers
+async def get_async_session() -> AsyncGenerator[AsyncSession, None]:
+    """
+    FastAPI dependency that provides an async database session.
+
+    Usage:
+        @app.get("/items")
+        async def get_items(session: AsyncSession = Depends(get_async_session)):
+            ...
+    """
+    async with AsyncSessionLocal() as session:
+        try:
+            yield session
+        finally:
+            await session.close()

@@ -476,3 +476,46 @@ class CycleCheckResponse(BaseModel):
         default_factory=list,
         description="List of cycles, each cycle is a list of opportunity IDs",
     )
+
+
+# ---------------------------------------------------------------------------
+# Optimization Execution
+# ---------------------------------------------------------------------------
+
+
+class OptimizationRequest(BaseModel):
+    """Request body for triggering an optimization run."""
+
+    method: str = Field(
+        default="DETERMINISTIC",
+        description="Optimization method: DETERMINISTIC, STOCHASTIC, MULTI_OBJECTIVE",
+    )
+    solver: str | None = Field(
+        default=None,
+        description="Solver to use (highs, gurobi, cplex, etc.). If not specified, uses default from config.",
+    )
+    time_limit_seconds: int | None = Field(
+        default=None,
+        ge=1,
+        le=3600,
+        description="Maximum solve time in seconds",
+    )
+    mip_gap: float | None = Field(
+        default=0.001,
+        ge=0.0,
+        le=0.1,
+        description="Target MIP gap (0.001 = 0.1% = 99.9% optimal)",
+    )
+
+
+class OptimizationStatus(BaseModel):
+    """Response schema for optimization status."""
+
+    scenario_id: str
+    task_id: str | None = None
+    status: str = Field(..., description="Status: DRAFT, QUEUED, RUNNING, COMPLETED, FAILED, CANCELLED")
+    message: str | None = None
+    progress: float | None = Field(default=None, ge=0.0, le=1.0, description="Progress fraction (0.0 to 1.0)")
+    solve_time_seconds: float | None = None
+    mip_gap: float | None = None
+    objective_value: float | None = None

@@ -7,7 +7,9 @@ value schemas that are referenced by domain-specific schema modules.
 from __future__ import annotations
 
 import math
-from typing import Generic, TypeVar
+import uuid
+from datetime import datetime
+from typing import Any, Generic, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -86,3 +88,69 @@ class TimeSeriesValue(BaseModel):
 
     year: int = Field(..., description="Year index (0-based relative to planning horizon start)")
     value: float = Field(..., description="Metric value for this year")
+
+
+# ---------------------------------------------------------------------------
+# Price Decks
+# ---------------------------------------------------------------------------
+
+
+class PriceDeckCreate(BaseModel):
+    """Request body for creating a price deck."""
+
+    name: str = Field(..., min_length=1, max_length=255, description="Price deck name (e.g., 'Base Case 2025')")
+    description: str | None = Field(default=None, description="Optional description")
+    effective_date: datetime = Field(..., description="Date this price deck becomes effective")
+    prices: dict[str, list[TimeSeriesValue]] = Field(
+        ...,
+        description="Commodity prices indexed by commodity name (e.g., 'oil_brent', 'gas_henry_hub')",
+    )
+
+
+class PriceDeckRead(BaseModel):
+    """Response schema for price deck."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    name: str
+    description: str | None = None
+    effective_date: datetime
+    prices: dict[str, Any] | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+# ---------------------------------------------------------------------------
+# Master Data Sets
+# ---------------------------------------------------------------------------
+
+
+class MasterDataSetCreate(BaseModel):
+    """Request body for creating a Master Data Set."""
+
+    name: str = Field(..., min_length=1, max_length=255)
+    category: str = Field(..., max_length=100, description="Category (e.g., 'Fiscal Regime', 'Price Scenario')")
+    description: str | None = Field(default=None)
+    applicability_filter: dict[str, Any] | None = Field(
+        default=None,
+        description="Attribute matching rules for auto-applying to projects",
+    )
+    metrics: dict[str, list[TimeSeriesValue]] = Field(
+        ...,
+        description="Named time-series parameters in this data set",
+    )
+
+
+class MasterDataSetRead(BaseModel):
+    """Response schema for Master Data Set."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    name: str
+    category: str
+    description: str | None = None
+    applicability_filter: dict[str, Any] | None = None
+    created_at: datetime
+    updated_at: datetime
