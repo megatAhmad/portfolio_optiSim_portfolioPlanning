@@ -1,0 +1,164 @@
+# Portfolio OptiSim - Docker Compose Configuration
+# Usage:
+#   docker-compose up        # Start all services
+#   docker-compose up -d     # Start detached
+#   docker-compose down      # Stop all services
+#   docker-compose logs -f   # Follow logs
+
+services:
+  # ---------------------------------------------------------------------------
+  # PostgreSQL 16 + TimescaleDB
+  # ---------------------------------------------------------------------------
+  db:
+    image: timescale/timescaledb:latest-pg16
+    container_name: portfolio_optisim_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: portfolio
+      POSTGRES_PASSWORD: portfolio
+      POSTGRES_DB: portfolio_optisim
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U portfolio -d portfolio_optisim"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - portfolio_net
+
+  # ---------------------------------------------------------------------------
+  # Redis (cache + Celery broker + result backend)
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: portfolio_optisim_redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - portfolio_net
+
+  # ---------------------------------------------------------------------------
+  # FastAPI Application Server
+  # ---------------------------------------------------------------------------
+  api:
+    build:
+      context: .
+      dockerfile: infrastructure/docker/Dockerfile.backend
+    container_name: portfolio_optisim_api
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - ENVIRONMENT=development
+      - DEBUG=true
+      - DATABASE_HOST=db
+      - DATABASE_PORT=5432
+      - DATABASE_USER=portfolio
+      - DATABASE_PASSWORD=portfolio
+      - DATABASE_NAME=portfolio_optisim
+      - REDIS_URL=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://redis:6379/1
+      - CELERY_RESULT_BACKEND=redis://redis:6379/2
+      - SECRET_KEY=docker-dev-secret-change-in-production
+      - DEFAULT_SOLVER=highs
+      - CORS_ORIGINS=["http://localhost:3000","http://localhost:8000"]
+    volumes:
+      - ./backend:/app
+      - upload_data:/tmp/portfolio_optisim/uploads
+      - export_data:/tmp/portfolio_optisim/exports
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: >
+      uvicorn app.main:app
+      --host 0.0.0.0
+      --port 8000
+      --reload
+      --log-level info
+    networks:
+      - portfolio_net
+
+  # ---------------------------------------------------------------------------
+  # Celery Worker (optimization + Monte Carlo + report generation)
+  # ---------------------------------------------------------------------------
+  worker:
+    build:
+      context: .
+      dockerfile: infrastructure/docker/Dockerfile.worker
+    container_name: portfolio_optisim_worker
+    restart: unless-stopped
+    environment:
+      - ENVIRONMENT=development
+      - DATABASE_HOST=db
+      - DATABASE_PORT=5432
+      - DATABASE_USER=portfolio
+      - DATABASE_PASSWORD=portfolio
+      - DATABASE_NAME=portfolio_optisim
+      - REDIS_URL=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://redis:6379/1
+      - CELERY_RESULT_BACKEND=redis://redis:6379/2
+      - SECRET_KEY=docker-dev-secret-change-in-production
+      - DEFAULT_SOLVER=highs
+    volumes:
+      - ./backend:/app
+      - upload_data:/tmp/portfolio_optisim/uploads
+      - export_data:/tmp/portfolio_optisim/exports
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - portfolio_net
+
+  # ---------------------------------------------------------------------------
+  # Next.js Frontend (development)
+  # ---------------------------------------------------------------------------
+  frontend:
+    build:
+      context: .
+      dockerfile: infrastructure/docker/Dockerfile.frontend
+    container_name: portfolio_optisim_frontend
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:8000/api/v1
+      - NODE_ENV=development
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+      - /app/.next
+    depends_on:
+      - api
+    networks:
+      - portfolio_net
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  upload_data:
+    driver: local
+  export_data:
+    driver: local
+
+networks:
+  portfolio_net:
+    driver: bridge
